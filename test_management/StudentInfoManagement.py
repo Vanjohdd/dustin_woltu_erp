@@ -1,177 +1,151 @@
-from ..business_api import request
+import json
+from datetime import datetime
+from odoo.http import request
+import pandas as pd
+from ..common_util.ResponseMessageHelper import ResponseMessageHelper
 from ..common_object import Global
 from ..common_object.WhichDatabaseEnum import WhichDatabaseEnum
-from ..common_util.ResponseMessageHelper import ResponseMessageHelper, ResponseHelper
-from ..database_access.BaseAccess import BaseAccess
+from ..common_util.ResponseMessageHelper import ResponseHelper
+from ..database_access.common.BusinessTableChangedLogAccess import BusinessTableChangeLogAccess
 from ..database_access.test.StudentInfoAccess import StudentInfoAccess
-from ..database_util.PSQLOperate import PSQLOperate
 from ..database_util.PostgresqlOperate import PostgresqlOperate
 from ..common_util.BaseManagement import BaseManagement
-
-
-
-
+from ..common_util.FileUploadHelper import FileUploadHelper
+import xlrd
+import xlwt
+from ..common_util.ExcelHelper import ExcelHelper
+from io import BytesIO
+from ..common_util.HttpHelper import HttpHelper
 class StudentInfoManagement(BaseManagement):
-# #查
-#     def query_all_student_info(self, query_condition, page_index=1, page_size=80, query_name_list=[],
-#                                  show_name_list=[], order_by=None, group_by=None):
-#
-#         with PostgresqlOperate(WhichDatabaseEnum.Odoo10Database) as op:
-#             access = StudentInfoAccess(op, self)
-#             row_count, result, page_index = access.query_all_student_info(query_condition, page_index, page_size,
-#                                                                             query_name_list, show_name_list, order_by,
-#                                                                             group_by)
-#             if access.error_code == Global.response_error_code:
-#                 return ResponseHelper.error("查询学生信息失败[%s]" % access.error_message)
-#
-#             return ResponseHelper.success_pagination(row_count, result, page_index)
 
-    #分页查询
-    def query_all_student_info(self, query_condition, page_index=1, page_size=80, query_name_list=[],
-                                  show_name_list=[], order_by=None, group_by=None):
-        #定义函数并接收了查询条件：.........
+    def import_student_info(self, file_list, upload_json_data):
+        file = file_list[0]
+        file_type = file.filename.split(".")[-1]
+        file_data = file.stream._file
+
+        if file_type not in ["xlsx", "xls"]:
+            return ResponseHelper.error("上传的文件类型必须是*.xls or *.xlsx")
+
+        success, content_list = self._deal_student_info(file_data)
+        if not success:
+            return ResponseHelper.error(content_list)
+
         with PostgresqlOperate(WhichDatabaseEnum.Odoo10Database, False) as op:
-            #执行对postgresqloperate数据库的操作
+            log_access = BusinessTableChangeLogAccess(op, self)
             access = StudentInfoAccess(op, self)
-            #对系统子系统进行操作
-            row_count, result, next_page_index = access.query_all_student_info(query_condition,
-                                                                                    query_name_list=query_name_list,
-                                                                                    show_name_list=show_name_list,
-                                                                                    page_index=page_index,
-                                                                                    page_size=page_size,
-                                                                                    order_by=order_by,
-                                                                                    group_by=group_by)
-            #调用方法传入查询条件并返回row_count, result, next_page_index
-            if access.error_code == Global.response_error_code:
-                error_info = "query sub system failure[%s]" % access.error_message
-                return ResponseMessageHelper.get_error_response_dict(error_info)
-            #错误响应字典，有错误就返回
+            category_list = [item.get('cn_sub_category') for item in content_list]
+            if not category_list:
+                return ResponseHelper.error('品类不能为空')
+            category_list = [item.get('cn_sub_category') for item in content_list]
+            if not category_list:
+                return ResponseHelper.error('品类不能为空')
 
-
-            return ResponseMessageHelper.get_pagination_response_dict(row_count, result, next_page_index)
-        #若没有发生错误，就返回row_count, result, next_page_index
-
-#查询
-    def query_student_info(self, query_json_data, query_name_list=[],
-          show_name_list=[]):
-        with PostgresqlOperate(WhichDatabaseEnum.Odoo10Database, False) as op:
-            access = StudentInfoAccess(op, self)
-            row_count, result, next_page_index = access.query_all_student_info(query_json_data,
-                                                                               query_name_list=query_name_list,
-                                                                               show_name_list=show_name_list)
-            if access.error_code == Global.response_error_code:
-                error_info = "query sub system failure[%s]" % access.error_message
-                return ResponseMessageHelper.get_error_response_dict(error_info)
-            return ResponseMessageHelper.get_pagination_response_dict(row_count, result, next_page_index)
-
-
-
-
-#增
-    # def modify_student_info(self, json_data):
-
-    #   def modify_student_info(self, json_data):
-    #     request_data = request.jsonrequest
-    #
-    #     validator = ModifyStudentInfo(request_data)
-    #
-    #     is_pass = validator.is_valid()
-    #     if not is_pass:
-    #        return ResponseMessageHelper.get_error_response_dict(validator.errors)
-    #
-    #     account = StudentInfoManagement(request)
-    #
-    #     return account.modify_student_info(request_data)
-    # def modify_student_info(self, page_index, page_size,order_by,group_by):
-    #     with PSQLOperate(WhichDatabaseEnum.Odoo10Database, False) as op:
-    #         access = StudentInfoAccess(op, self)
-    #         row_count, result, page_index = access.modify_student_info(page_index, page_size,order_by,group_by)
-    #         if access.error_code == Global.response_error_code:
-    #             return ResponseHelper.error("添加学生信息失败[%s]" % access.error_message)
-    #         return ResponseHelper.success_pagination(row_count, result, page_index)
-    def modify_student_info(self,json_data):
-        with PostgresqlOperate(WhichDatabaseEnum.Odoo10Database, False) as op:
-            access = StudentInfoAccess(op, self)
-            save_data = json_data.get("update_save_json")
-            update_dict = {
-                "id": save_data.get("id"),
-                "age": save_data.get("age")
-            }
-
-            access.write_no_log(update_dict)
+            result = access.search([('cn_sub_category', 'in', list(set(category_list))), ('status', '=', 20)],
+                                   ['id', 'cn_sub_category'])
             if access.error_code == Global.response_error_code:
                 op.rollback()
-                return ResponseHelper.error("修改学生信息失败[%s]" % (access.error_message))
+                return ResponseHelper.error('查询品类失败%s' % access.error_message)
+
+            if not result:
+                op.rollback()
+                return ResponseHelper.error('品类不存在')
+
+            category_dict = {item.get('cn_sub_category'): item.get('id') for item in result}
+            error_list = []
+
+            for item in content_list:
+                cn_sub_category = item.get("cn_sub_category")
+                ref_yoy_growth = item.get("ref_yoy_growth")
+                plan_ads_fee_ratio = item.get("plan_ads_fee_ratio")
+                category_id = category_dict.get(cn_sub_category)
+
+                if not category_id:
+                    op.rollback()
+                    error_list.append('当前三级分类不存在%s' % cn_sub_category)
+                    continue
+
+                write_data = {}
+                log_content = "更新"
+                if ref_yoy_growth:
+                    write_data.update({"ref_yoy_growth": ref_yoy_growth})
+                    log_content += '参考同比增长%s;' % ref_yoy_growth
+
+                if plan_ads_fee_ratio:
+                    write_data.update({"plan_ads_fee_ratio": plan_ads_fee_ratio})
+                    log_content += '参考CPC预算比例%s;' % plan_ads_fee_ratio
+
+                if not write_data:
+                    continue
+
+                write_data.update({"id": category_id})
+                access.write(write_data)
+                if access.error_code == Global.response_error_code:
+                    op.rollback()
+                    error_list.append('修改品类增长比例失败%s' % access.error_message)
+                    continue
+
+                log_access.add_business_table_log(access._table_name, category_id, "更新", log_content)
+                if access.error_code == Global.response_error_code:
+                    op.rollback()
+                    error_list.append('添加日志失败%s' % log_access.error_message)
+                    continue
+
+            if error_list:
+                op.rollback()
+                return ResponseHelper.error(str(error_list))
 
             op.commit()
 
-            return ResponseHelper.success_message('hello')
+            return ResponseHelper.success()
 
-    def modify_student_info(self,  json_data):
-        with PostgresqlOperate(WhichDatabaseEnum.Odoo10Database, False) as op:
-            access = StudentInfoAccess(op, self)
-            save_data = json_data.get("delete_save_json")
-            delete_dict = {
-                "id": save_data.get("id"),
-                "age": save_data.get("age")
-            }
-            access.delete(delete_dict)
-            if access.error_code == Global.response_error_code:
-                op.rollback()
-                return ResponseHelper.error("删除学生信息失败[%s]" % (access.error_message))
-            op.commit()
-            return ResponseHelper.success_message('hello')
+    def export_student_info(self, json_data):
+        with PostgresqlOperate(WhichDatabaseEnum.Odoo10Database) as op:
+            student_access = StudentInfoAccess(op, self)
 
+            query_name_list = [
+                'id', 'age', 'class', 'student_name', 'student_id'
+            ]
 
-    def modify_student_info(self, json_data):
-        with PostgresqlOperate(WhichDatabaseEnum.Odoo10Database, False) as op:
-            access = StudentInfoAccess(op, self)
-            save_data = json_data.get("create_save_json")
-            create_dict = {
-                "age": save_data.get("age"),
-                "class": save_data.get("class"),
-                "student_name": save_data.get("student_name"),
-                "student_id": save_data.get("student_id")
-            }
-            access.create_odoo_no_log(create_dict)
-            if access.error_code == Global.response_error_code:
-                op.rollback()
-                return ResponseHelper.error("添加学生信息失败[%s]" % (access.error_message))
-            op.commit()
-            return ResponseHelper.success_message('hello')
+            id_list = json_data.get("id_list")
+            id_list = json.loads(id_list)
+            student_result = student_access.search([("id","in",id_list)], query_name_list)
+            if student_access.error_code == Global.response_error_code:
+                return ResponseHelper.error("查询失败[%s]" % student_access.error_code)
 
-    def query_student_info(self, json_data):
-        with PostgresqlOperate(WhichDatabaseEnum.Odoo10Database, False) as op:
-            access = StudentInfoAccess(op, self)
-            save_data = json_data.get("query_save_json")
-            query_dict={
-                "id": save_data.get("id"),
-                "age": save_data.get("age"),
-                "class": save_data.get("class"),
-                "student_name": save_data.get("student_name"),
-                "student_id": save_data.get("student_id")
+            wbk = xlwt.Workbook(encoding='utf-8')
 
-            }
-            access.query(query_dict)
-            if access.error_code == Global.response_error_code:
-                op.rollback()
-                return ResponseHelper.error("查询学生信息失败[%s]" % (access.error_message))
-            op.commit()
-            return ResponseHelper.success_message('hello')
+            sheet = wbk.add_sheet("说明书", cell_overwrite_ok=True)
 
+            excel_helper = ExcelHelper()
 
-    def query_student_info(self, query_json_data, query_name_list=[],
-          show_name_list=[]):
-        with PostgresqlOperate(WhichDatabaseEnum.Odoo10Database, False) as op:
-            access = StudentInfoAccess(op, self)
-            row_count, result, next_page_index = access.query_all_student_info(query_json_data,
-                                                                               query_name_list=query_name_list,
-                                                                               show_name_list=show_name_list)
-            access.query(query_dict)
-            if access.error_code == Global.response_error_code:
-                op.rollback()
-                return ResponseHelper.error("查询学生信息失败[%s]" % (access.error_message))
-            op.commit()
-            return ResponseHelper.success_message('hello')
+            title_style = excel_helper.set_excel_style(height=220, bold=False, nalign=1, border=1, wrap=True)
+            content_style = excel_helper.set_excel_style(height=220, bold=False, nalign=1, border=1,
+                                                         fontname='Times New Roman', wrap=True)
+            header_list = [ "ID", "年龄", "班级", "学生姓名", "学号"]
 
+            header_width_list = [2000, 2000, 2000, 2000, 2000]
 
+            for col in range(len(header_list)):
+                sheet.write(0, col, header_list[col], title_style)
+                sheet.col(col).set_width(header_width_list[col])
+
+            rows = 1
+            for student in student_result:
+                sheet.write(rows, 0, student.get("id"), content_style)
+                sheet.write(rows, 1, student.get("age"), content_style)
+                sheet.write(rows, 2, student.get("class"), content_style)
+                sheet.write(rows, 3, student.get("student_name"), content_style)
+                sheet.write(rows, 4, student.get("student_id"), content_style)
+
+                rows += 1
+
+            excel_obj = BytesIO()
+
+            wbk.save(excel_obj)
+
+            a=excel_obj.getvalue()
+
+            file_name = "student_%s.xls" % (datetime.now().strftime("%Y%m%d%H%M%S"))
+
+            http_helper = HttpHelper()
+            return http_helper.get_response(request, excel_obj.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", file_name)
